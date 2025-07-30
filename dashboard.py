@@ -13,69 +13,59 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ------------------ File Upload ------------------
+# ------------------ File Upload and Reading ------------------
 uploaded_file = st.file_uploader(
-    "Upload your CSV file (Exported for specific month)", 
-    type=["csv"], 
-    accept_multiple_files=False
+    "Upload your CSV file (Performance data for a month)", type=["csv"]
 )
 
 if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
+    # Attempt to read CSV file with flexible engine, handle common delimiters
+    delimiter = st.selectbox("Select CSV delimiter", [",", ";", "\t"], index=0)
+    try:
+        df = pd.read_csv(uploaded_file, sep=delimiter, engine="python", encoding="utf-8")
+    except Exception as e:
+        st.error(f"Error loading CSV file: {e}")
+        st.stop()
 
-    # Ensure required columns exist
-    required_columns = [
+    # Required columns including 'Submitted For' for datetime
+    required_cols = [
         "Country", "Store", "Audit Status", "Entity Id", 
         "Employee Name", "Result", "Submitted For"
     ]
-    missing = [col for col in required_columns if col not in df.columns]
-    if missing:
-        st.error(f"Missing required columns: {', '.join(missing)}")
+
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        st.error(f"Missing required columns in your file: {', '.join(missing_cols)}")
         st.stop()
 
+    # Convert 'Result' to numeric safely
     df['Result'] = pd.to_numeric(df['Result'], errors='coerce')
 
-    # --- Parse the "Submitted For" date column and extract month name ---
-    def extract_month(dt):
-        try:
-            parsed_date = pd.to_datetime(dt, format='%d-%b-%y', errors='coerce')
-            if pd.isnull(parsed_date):
-                return None
-            return parsed_date.strftime('%B %Y')
-        except Exception:
-            return None
+    # Parse 'Submitted For' into datetime
+    df['Submitted For'] = pd.to_datetime(df['Submitted For'], errors='coerce', dayfirst=True)
 
-    # Ensure. "Submitted For" is not NA, and parse as date for deduplication
-    df = df[df["Submitted For"].notna()].copy()
-    df["Submission_Date"] = pd.to_datetime(df["Submitted For"], format='%d-%b-%y', errors='coerce')
+    # Drop rows where 'Submitted For' is NaT after parsing
+    df = df.dropna(subset=['Submitted For'])
 
-    # Deduplicate: keep only the earliest submission per Employee, Store, Country for the month
-    sort_cols = ["Country", "Store", "Employee Name", "Submission_Date"]
-    df = df.sort_values(sort_cols)
-    df = df.drop_duplicates(subset=["Country", "Store", "Employee Name"], keep="first")
+    # Sort by Employee and Submission date, keep only first submission per employee
+    df = df.sort_values(['Employee Name', 'Submitted For'])
+    df = df.drop_duplicates(subset=['Employee Name'], keep='first')
 
-    # For month name for display: get mode of month label
-    month_labels = df['Submission_Date'].dt.strftime('%B %Y')
-    month_name = month_labels.mode().iloc[0] if not month_labels.mode().empty else "Unknown Month"
+    # Extract month-year for display from 'Submitted For' column using mode (most common)
+    month_display = df['Submitted For'].dt.strftime('%B %Y').mode()
+    month_display = month_display[0] if not month_display.empty else "Unknown Month"
 
     st.markdown(
-        f"<h3 style='text-align: center; color: #20B2AA;'>Data for: {month_name}</h3>", 
+        f"<h3 style='text-align: center; color: #20B2AA;'>Data for: {month_display}</h3>", 
         unsafe_allow_html=True
     )
 
     # ------------------ Sidebar Filters ------------------
     st.sidebar.header("Filters")
-    countries = st.sidebar.multiselect(
-        "Select Country", options=df['Country'].unique(), default=list(df['Country'].unique())
-    )
-    stores = st.sidebar.multiselect(
-        "Select Store", options=df['Store'].unique(), default=list(df['Store'].unique())
-    )
+    countries = st.sidebar.multiselect("Select Country", options=df['Country'].unique(), default=df['Country'].unique())
+    stores = st.sidebar.multiselect("Select Store", options=df['Store'].unique(), default=df['Store'].unique())
 
-    filtered_df = df[
-        (df['Country'].isin(countries)) &
-        (df['Store'].isin(stores))
-    ]
+    filtered_df = df[(df['Country'].isin(countries)) & (df['Store'].isin(stores))]
 
     # ------------------ Store-wise Count by Audit Status ------------------
     st.subheader("📊 Store-wise Count by Audit Status")
@@ -113,7 +103,7 @@ if uploaded_file is not None:
         title=f"Store Performance in {selected_country_perf} (High to Low)",
         labels={"Result": "Average Score"}
     )
-    fig_country_perf.update_traces(texttemplate='%{{text:.2f}}', textposition='outside')
+    fig_country_perf.update_traces(texttemplate='%{text:.2f}', textposition='outside')
     fig_country_perf.update_layout(xaxis_tickangle=-45, yaxis=dict(range=[0, 100]))
     st.plotly_chart(fig_country_perf)
 
@@ -132,10 +122,12 @@ if uploaded_file is not None:
     )
     fig_country.update_layout(bargap=0.1)
     st.plotly_chart(fig_country)
+
     st.markdown(f"### Employees in {selected_country}")
-    st.dataframe(country_df[[
-        "Employee Name", "Store", "Entity Id", "Audit Status", "Result"
-    ]].sort_values(by="Result", ascending=False))
+    st.dataframe(
+        country_df[["Employee Name", "Store", "Entity Id", "Audit Status", "Result"]]
+        .sort_values(by="Result", ascending=False)
+    )
 
     # ------------------ Store Drilldown ------------------
     st.subheader("Store-wise Bell Curve")
@@ -172,8 +164,7 @@ if uploaded_file is not None:
             yaxis_title='Probability Density'
         )
         st.plotly_chart(fig_pdf)
-    st.markdown(f"""**Mean Score:** {mean_score:.2f}  
-**Standard Deviation:** {std_dev:.2f}""")
+    st.markdown(f"**Mean Score:** {mean_score:.2f}  \n**Standard Deviation:** {std_dev:.2f}")
 
     # ------------------ Country vs Score by Audit Status ------------------
     st.subheader("Score Distribution by Country and Audit Status")
