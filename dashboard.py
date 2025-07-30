@@ -5,7 +5,7 @@ import streamlit as st
 import numpy as np
 from scipy.stats import norm
 
-# ------------------ Branding Header ------------------
+# --- Branding Header ---
 st.image("your_combined_logo_filename.png", use_column_width=True)
 st.markdown(
     """<h2 style='text-align: center; color: #6A5ACD;'>French Spirit - Laduree Dashboard</h2>
@@ -13,7 +13,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ------------------ File Upload and Reading ------------------
+# --- File Upload
 uploaded_file = st.file_uploader(
     "Upload your CSV file (Performance data for a month)", type=["csv"]
 )
@@ -26,11 +26,14 @@ if uploaded_file is not None:
         st.error(f"Error loading CSV file: {e}")
         st.stop()
 
-    # Find columns regardless of upper/lower/space/underscore differences
-    def find_column(cols, target):
-        colmap = {c.lower().replace(" ", "").replace("_", ""): c for c in cols}
-        return colmap.get(target.lower().replace(" ", "").replace("_", ""))
-    # Mapping expected fields in code to actual CSV headers
+    # Flexible header mapping
+    def colname(cols, target):
+        target = target.lower().replace(" ", "").replace("_", "")
+        for c in cols:
+            c_norm = c.lower().replace(" ", "").replace("_", "")
+            if c_norm == target:
+                return c
+        return None
     expected = {
         "Country": "Country",
         "Store": "Store",
@@ -41,44 +44,43 @@ if uploaded_file is not None:
         "Submitted For": "Submitted For"
     }
     for k in expected:
-        col = find_column(df.columns, k)
-        if not col:
+        found = colname(df.columns, k)
+        if not found:
             st.error(f"Missing required column: {k}")
             st.stop()
-        expected[k] = col  # Remap in case of minor header diff
+        expected[k] = found
 
-    # Convert Result to numeric safely
     df[expected['Result']] = pd.to_numeric(df[expected['Result']], errors='coerce')
 
-    # Parse 'Submitted For' into datetime (try multiple date formats for robustness)
-    for fmt in ["%d-%b-%y", "%d %B %Y", "%d/%m/%Y", "%d %b %Y", "%d-%B-%Y"]:
-        df[expected['Submitted For']] = pd.to_datetime(
-            df[expected['Submitted For']], format=fmt, errors='coerce'
-        )
-        # If enough dates were successfully parsed, break
-        if df[expected['Submitted For']].notnull().sum() > len(df) * 0.5:
+    # Robust datetime parsing for "Submitted For"
+    date_formats = ["%d %B %Y", "%d %b %Y", "%d-%b-%Y", "%d-%B-%Y", "%d/%m/%Y", "%d %b %y", "%d-%b-%y"]
+    parsed = None
+    for fmt in date_formats:
+        parsed = pd.to_datetime(df[expected['Submitted For']], format=fmt, errors='coerce')
+        if parsed.notnull().sum() > len(df) * 0.5:
+            df[expected['Submitted For']] = parsed
             break
-
-    # Drop rows where Submitted For did not parse
+    else:
+        # if nothing works, fallback to auto
+        df[expected['Submitted For']] = pd.to_datetime(df[expected['Submitted For']], errors='coerce')
     df = df.dropna(subset=[expected['Submitted For']])
 
-    # Deduplicate: Keep only FIRST submission per Country+Store+Employee for the month
+    # Deduplicate: FIRST submission for each Country+Store+Employee
     df = df.sort_values([expected["Country"], expected["Store"], expected["Employee Name"], expected["Submitted For"]])
     df = df.drop_duplicates(
         subset=[expected["Country"], expected["Store"], expected["Employee Name"]],
         keep="first"
     )
 
-    # Extract month display (mode or first valid)
+    # Extract month/year for display
     month_display = df[expected['Submitted For']].dt.strftime('%B %Y').mode()
     month_display = month_display[0] if not month_display.empty else "Unknown Month"
     st.markdown(
-        f"<h3 style='text-align: center; color: #20B2AA;'>Data for: {month_display}</h3>", 
+        f"<h3 style='text-align: center; color: #20B2AA;'>Data for: {month_display}</h3>",
         unsafe_allow_html=True
     )
 
-    # Use remapped columns for rest of app
-    # All column references are through expected[...] (ensures column found)
+    # --- Sidebar Filters ---
     st.sidebar.header("Filters")
     countries = st.sidebar.multiselect(
         "Select Country", options=df[expected['Country']].unique(),
@@ -93,7 +95,7 @@ if uploaded_file is not None:
         (df[expected['Store']].isin(stores))
     ]
 
-    # ------------------ Store-wise Count by Audit Status ------------------
+    # --- Store-wise Count by Audit Status ---
     st.subheader("📊 Store-wise Count by Audit Status")
     selected_stores_bar = st.multiselect(
         "Select Store(s) for Audit Status Count Chart",
@@ -115,7 +117,7 @@ if uploaded_file is not None:
     fig_store_audit_status.update_layout(xaxis_tickangle=-45)
     st.plotly_chart(fig_store_audit_status)
 
-    # ------------------ Country-specific Store Performance Chart ------------------
+    # --- Country-specific Store Performance Chart ---
     st.subheader("🏆 Store Performance by Country")
     selected_country_perf = st.selectbox(
         "Select Country to View Store Performance",
@@ -136,7 +138,7 @@ if uploaded_file is not None:
     fig_country_perf.update_layout(xaxis_tickangle=-45, yaxis=dict(range=[0, 100]))
     st.plotly_chart(fig_country_perf)
 
-    # ------------------ Country Drilldown ------------------
+    # --- Country Drilldown ---
     st.subheader("Country-wise Bell Curve and Drilldown")
     selected_country = st.selectbox("Select Country for Drilldown", sorted(df[expected['Country']].dropna().unique()))
     country_df = df[df[expected['Country']] == selected_country]
@@ -159,7 +161,7 @@ if uploaded_file is not None:
         ].sort_values(by=expected["Result"], ascending=False)
     )
 
-    # ------------------ Store Drilldown ------------------
+    # --- Store Drilldown ---
     st.subheader("Store-wise Bell Curve")
     selected_store = st.selectbox("Select Store", sorted(df[expected['Store']].dropna().unique()))
     store_df = df[df[expected['Store']] == selected_store]
@@ -175,7 +177,7 @@ if uploaded_file is not None:
     fig_store.update_layout(bargap=0.1)
     st.plotly_chart(fig_store)
 
-    # ------------------ Probability Distribution Chart ------------------
+    # --- Probability Distribution Chart ---
     st.subheader("Probability Density of Performance Scores")
     mean_score = filtered_df[expected['Result']].mean()
     std_dev = filtered_df[expected['Result']].std()
@@ -200,7 +202,7 @@ if uploaded_file is not None:
         st.plotly_chart(fig_pdf)
     st.markdown(f"**Mean Score:** {mean_score:.2f}  \n**Standard Deviation:** {std_dev:.2f}")
 
-    # ------------------ Country vs Score by Audit Status ------------------
+    # --- Country vs Score by Audit Status ---
     st.subheader("Score Distribution by Country and Audit Status")
     fig_country_status = px.strip(
         filtered_df,
