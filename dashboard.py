@@ -2,10 +2,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from PIL import Image
 import numpy as np
 from scipy.stats import norm
-import datetime
 
 # ------------------ Branding Header ------------------
 st.image("your_combined_logo_filename.png", use_column_width=True)
@@ -24,7 +22,7 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
-    
+
     # Ensure required columns exist
     required_columns = [
         "Country", "Store", "Audit Status", "Entity Id", 
@@ -34,11 +32,10 @@ if uploaded_file is not None:
     if missing:
         st.error(f"Missing required columns: {', '.join(missing)}")
         st.stop()
-    
+
     df['Result'] = pd.to_numeric(df['Result'], errors='coerce')
 
-    # ------------- Extract Month from "Submitted For" column -------------
-    # Assumes format like "01-Jul-25"
+    # --- Parse the "Submitted For" date column and extract month name ---
     def extract_month(dt):
         try:
             parsed_date = pd.to_datetime(dt, format='%d-%b-%y', errors='coerce')
@@ -48,11 +45,19 @@ if uploaded_file is not None:
         except Exception:
             return None
 
-    # Extract the most common (usually only) month in the data
-    month_labels = df['Submitted For'].dropna().apply(extract_month)
-    # Only consider first valid or mode (most common) if multiple months
-    month_name = month_labels.mode()[0] if not month_labels.mode().empty else "Unknown Month"
-    
+    # Ensure. "Submitted For" is not NA, and parse as date for deduplication
+    df = df[df["Submitted For"].notna()].copy()
+    df["Submission_Date"] = pd.to_datetime(df["Submitted For"], format='%d-%b-%y', errors='coerce')
+
+    # Deduplicate: keep only the earliest submission per Employee, Store, Country for the month
+    sort_cols = ["Country", "Store", "Employee Name", "Submission_Date"]
+    df = df.sort_values(sort_cols)
+    df = df.drop_duplicates(subset=["Country", "Store", "Employee Name"], keep="first")
+
+    # For month name for display: get mode of month label
+    month_labels = df['Submission_Date'].dt.strftime('%B %Y')
+    month_name = month_labels.mode().iloc[0] if not month_labels.mode().empty else "Unknown Month"
+
     st.markdown(
         f"<h3 style='text-align: center; color: #20B2AA;'>Data for: {month_name}</h3>", 
         unsafe_allow_html=True
@@ -61,10 +66,10 @@ if uploaded_file is not None:
     # ------------------ Sidebar Filters ------------------
     st.sidebar.header("Filters")
     countries = st.sidebar.multiselect(
-        "Select Country", options=df['Country'].unique(), default=df['Country'].unique()
+        "Select Country", options=df['Country'].unique(), default=list(df['Country'].unique())
     )
     stores = st.sidebar.multiselect(
-        "Select Store", options=df['Store'].unique(), default=df['Store'].unique()
+        "Select Store", options=df['Store'].unique(), default=list(df['Store'].unique())
     )
 
     filtered_df = df[
@@ -108,7 +113,7 @@ if uploaded_file is not None:
         title=f"Store Performance in {selected_country_perf} (High to Low)",
         labels={"Result": "Average Score"}
     )
-    fig_country_perf.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+    fig_country_perf.update_traces(texttemplate='%{{text:.2f}}', textposition='outside')
     fig_country_perf.update_layout(xaxis_tickangle=-45, yaxis=dict(range=[0, 100]))
     st.plotly_chart(fig_country_perf)
 
@@ -143,5 +148,47 @@ if uploaded_file is not None:
         color="Audit Status",
         hover_data=["Country", "Entity Id", "Employee Name"],
         labels={"Result": "Performance Score"},
-        title=f"Performance Bell Curve for {selected_store
+        title=f"Performance Bell Curve for {selected_store}"
+    )
+    fig_store.update_layout(bargap=0.1)
+    st.plotly_chart(fig_store)
 
+    # ------------------ Probability Distribution Chart ------------------
+    st.subheader("Probability Density of Performance Scores")
+    mean_score = filtered_df['Result'].mean()
+    std_dev = filtered_df['Result'].std()
+    if not filtered_df['Result'].isnull().all():
+        x = np.linspace(filtered_df['Result'].min(), filtered_df['Result'].max(), 500)
+        pdf_y = norm.pdf(x, mean_score, std_dev)
+        fig_pdf = go.Figure()
+        fig_pdf.add_trace(go.Scatter(x=x, y=pdf_y, mode='lines', name='PDF'))
+        fig_pdf.add_vline(
+            x=mean_score, line_dash='dash', line_color='green',
+            annotation_text='Mean', annotation_position='top left'
+        )
+        fig_pdf.update_layout(
+            title='Probability Density Function (PDF) of Performance Scores',
+            xaxis_title='Performance Score',
+            yaxis_title='Probability Density'
+        )
+        st.plotly_chart(fig_pdf)
+    st.markdown(f"""**Mean Score:** {mean_score:.2f}  
+**Standard Deviation:** {std_dev:.2f}""")
+
+    # ------------------ Country vs Score by Audit Status ------------------
+    st.subheader("Score Distribution by Country and Audit Status")
+    fig_country_status = px.strip(
+        filtered_df,
+        x="Country",
+        y="Result",
+        color="Audit Status",
+        hover_data=["Employee Name", "Store", "Entity Id"],
+        stripmode="overlay",
+        labels={"Result": "Performance Score"},
+        title="Performance Scores by Country Grouped by Audit Status"
+    )
+    fig_country_status.update_layout(yaxis=dict(range=[0, 100]))
+    st.plotly_chart(fig_country_status)
+
+else:
+    st.info("Please upload a CSV file to begin.")
